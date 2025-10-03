@@ -9,18 +9,6 @@ The code fixes random seeds, restores an isolated R environment with **renv**, a
 
 ---
 
-## Repository layout
-Simulation/
-├── 00_renv_setup.R          # one-time: restore the exact package environment via renv
-├── 01_example2_simulation.R # reproduces the Example 2 experiment
-├── 02_run_simulation.R      # full pipeline: runs all sims and writes results/
-├── renv/                    # renv infrastructure (do not edit)
-├── renv.lock                # locked package versions for reproducibility
-├── results/                 # generated RDS file after running scripts
-└── Rcode.Rproj              # optional RStudio project file
-
----
-
 ## Prerequisites
 
 - **R ≥ 4.2** (tested on macOS and Linux; Windows should also work)

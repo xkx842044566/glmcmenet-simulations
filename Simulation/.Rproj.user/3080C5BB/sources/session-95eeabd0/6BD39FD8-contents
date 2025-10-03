@@ -1,0 +1,656 @@
+if(!require(devtools)) install.packages("devtools",repos = "http://cran.r-project.org")
+library(devtools)
+devtools::install_github("xkx842044566/glmcmenet@main",force = TRUE)
+library(glmcmenet)
+if(!require(cmenet)) install.packages("cmenet",repos = "http://cran.r-project.org")
+library(cmenet)
+if(!require(glmnet)) install.packages("glmnet",repos = "http://cran.r-project.org")
+library(glmnet)
+if(!require(dplyr)) install.packages("dplyr",repos = "http://cran.r-project.org")
+library(dplyr)
+if(!require(tidyr)) install.packages("tidyr",repos = "http://cran.r-project.org")
+library(tidyr)
+if(!require(stringr)) install.packages("stringr",repos = "http://cran.r-project.org")
+library(stringr)
+if(!require(ggplot2)) install.packages("ggplot2",repos = "http://cran.r-project.org")
+library(ggplot2)
+if(!require(MASS)) install.packages("MASS",repos = "http://cran.r-project.org")
+library(MASS)
+if(!require(gridExtra)) install.packages("gridExtra",repos = "http://cran.r-project.org")
+library(gridExtra)
+if(!require(grpreg)) install.packages("grpreg",repos = "http://cran.r-project.org")
+library(grpreg)
+if(!require(ncvreg)) install.packages("ncvreg",repos = "http://cran.r-project.org")
+library(ncvreg)
+if(!require(hierNet)) install.packages("hierNet",repos = "http://cran.r-project.org")
+library(hierNet)
+if(!require(parallel)) install.packages("parallel",repos = "http://cran.r-project.org")
+library(parallel)
+if(!require(foreach)) install.packages("foreach",repos = "http://cran.r-project.org")
+library(foreach)
+if(!require(doParallel)) install.packages("doParallel",repos = "http://cran.r-project.org")
+library(doParallel)
+
+rm(list=ls())
+
+
+
+
+
+simulation_adaptive_lambda<- function(n=50,p=50,num.act=2,num.grp=c(4,6,8,10,12),family=c("gaussian","binomial","poisson"), warm.str=c("lasso","adaptive_lasso","elastic","NULL"),iter=100,rho=0){
+  
+  ones <- matrix(1,p,p)
+  covmtx <- rho*ones+(1-rho)*diag(p)
+  
+  n.cores <- 32
+  cl <- makeCluster(n.cores - 1) 
+  registerDoParallel(cl)
+  
+  clusterEvalQ(cl, {
+    library(MASS)
+    library(glmcmenet)
+    library(cmenet)
+    library(glmnet)
+    library(ncvreg)
+    library(grpreg)
+    library(hierNet)
+    library(stringr)
+    # Load other packages and source functions as necessary
+  })
+  
+  
+  single_iter <- function(k) {
+    
+    tryCatch({
+      
+      sib_underlying<-rep(NA,length(num.grp))
+      cou_underlying<-rep(NA,length(num.grp))
+      
+      sib_TP<-rep(NA,length(num.grp)*7)
+      cou_TP<-rep(NA,length(num.grp)*7)
+
+      sib_FP<-rep(NA,length(num.grp)*7)
+      cou_FP<-rep(NA,length(num.grp)*7)
+
+      sib_FN<-rep(NA,length(num.grp)*7)
+      cou_FN<-rep(NA,length(num.grp)*7)
+
+      sib_group<-rep(NA,length(num.grp)*7)
+      cou_group<-rep(NA,length(num.grp)*7)
+ 
+      sib_class<-rep(NA,length(num.grp)*7)
+      cou_class<-rep(NA,length(num.grp)*7)
+
+      sib_loss<-rep(NA,length(num.grp)*7)
+      cou_loss<-rep(NA,length(num.grp)*7)
+
+      base_names <- c("glmcme(baseline)","glmcme(ridge)","Lasso", "adpLasso", "MCP", "GEL", "hiernet")
+      
+      names(sib_TP)=names(cou_TP)=
+        names(sib_FP)=names(cou_FP)=
+        names(sib_FN)=names(cou_FN)=
+        names(sib_class)=names(cou_class)=
+        names(sib_group)=names(cou_group)=
+        names(sib_loss)=names(cou_loss)=unlist(lapply(num.grp, function(g) paste0(base_names, "_G", g, "A",num.act)))
+      names(sib_underlying)=names(cou_underlying)=unlist(lapply(num.grp, function(g) paste0("G", g, "A",num.act)))
+      
+      
+      
+      latmtx <- mvrnorm(n,p,mu=rep(0,p),Sigma=covmtx) #equicorrelated cov. matrix
+      memtx <- (latmtx>=0)-(latmtx<0) #simulate model matrix for MEs
+      model.mtx <- full.model.mtx(memtx)$model.mtx #generate model matrix for MEs and CMEs
+      grouplist <- grouplist(model.mtx)
+      
+      ### test X
+      ntst <- 20
+      latmtxtst <- mvrnorm(ntst,p,mu=rep(0,p),Sigma=covmtx)
+      memtxtst <- (latmtxtst>=0)-(latmtxtst<0)
+      tst.mtx <- full.model.mtx(memtxtst)$model.mtx
+      
+      ########### Main+Siblings active ###############
+      for(g in 1:length(num.grp)){
+        
+        print(paste0("G",num.grp[g],"siblings,iter=",k))
+        cmeind <- c()
+        meind <- 1:num.grp[g]
+        for (ii in 1:num.grp[g]){
+          pair_ind <- sample(1: (p-1), num.act, replace = FALSE)
+          eff <- sapply(pair_ind, function(idx) {
+            temp <- 2 * (idx - 1) + 1
+            sample(temp:(temp + 1), 1)
+          })
+          cmeind <- c(cmeind, p + eff + (ii-1)*(2*(p-1))) 
+        }
+        ind<- sort(unique(c(meind, cmeind)))
+        grp.ind <- unique(unlist(lapply(ind, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        des.mtx <- model.mtx[,ind]
+        
+        ### fit x and yglm
+        inter = 0
+        if(family=="binomial"){
+          betatrue<-c(rep(5,num.grp[g]),rep(1,2*num.grp[g]))
+          xbtrue <- inter+des.mtx %*% betatrue
+          yglm <- rbinom(length(xbtrue),1,1/(1+exp(-xbtrue)))
+        }else if(family=="poisson"){
+          betatrue<-c(rep(2/num.grp[g],num.grp[g]),rep(0.4/num.grp[g],2*num.grp[g]))
+          xbtrue <- inter+des.mtx %*% betatrue
+          yglm <- rpois(length(xbtrue),exp(xbtrue))
+        }
+        
+        xme <- model.mtx[,1:p]
+        xcme <- model.mtx[,(p+1):ncol(model.mtx)]
+        
+        ## test x and yglm
+        xbtst <- inter+tst.mtx[,ind] %*% betatrue
+        
+        if(family=="binomial"){
+          ytst <- rbinom(length(xbtst),1,1/(1+exp(-xbtst)))
+          sib_underlying[g]<-mean(ifelse((1/(1+exp(-xbtst)))>0.5,1,0)!=ytst)
+        }else if(family=="poisson"){
+          ytst <- rpois(length(xbtst),exp(xbtst))
+          sib_underlying[g]<-sqrt(sum((exp(xbtst)-ytst)^2))/length(ytst)
+        }
+        
+        cv.ridge <- cv.glmnet(cbind(xme,xcme),yglm, family=family, alpha=0, standardize=FALSE)
+        coef <- matrix(coef(cv.ridge, s=cv.ridge$lambda.min)[, 1][2:(ncol(cbind(xme,xcme))+1)]) ## Using gamma = 1
+        mg <- sapply(grouplist,function(x){1/(sum(abs(coef[x]))+1/n)^1})
+        mg[mg == Inf] <- 999999999 ## Replacing values estimated as Infinite for 999999999
+        w <- 1/(abs(coef)+1/n)^1 ## Using gamma = 1
+        w[w[,1] == Inf] <- 999999999 ## Replacing values estimated as Infinite for 999999999
+
+        
+        ## Run glmcmenet ---- no adaptive
+        cv.glmcme <- glmcmenet::cv.glmcmenet(xme, xcme, yglm, family=family,var.names=colnames(model.mtx),
+                                             nfolds = 10,type.measure="deviance",warm.str=warm.str,
+                                             screen_ind=F)
+        fit.glmcme <- cv.glmcme$cme.fit
+        sel.glmcme <- cv.glmcme$select.idx
+        grp.glmcme <- unique(unlist(lapply(sel.glmcme, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        sib_group[1+(g-1)*7]<-length(intersect(grp.glmcme,grp.ind))/length(grp.ind)
+        sib_TP[1+(g-1)*7]<-length(intersect(sel.glmcme,ind)) #selected effects in true model
+        sib_FP[1+(g-1)*7]<-length(setdiff(sel.glmcme,ind)) #selected effects not in true model
+        sib_FN[1+(g-1)*7]<-length(setdiff(ind,sel.glmcme)) #true effects not in selected model
+        pred.glmcme <- glmcmenet::predictcme(fit.glmcme,newx=tst.mtx,type="response")[,which(cv.glmcme$lambda.sib ==cv.glmcme$params[1]),
+                                                                                      which(cv.glmcme$lambda.cou == cv.glmcme$params[2])]
+        if(family=="binomial"){
+          sib_class[1+(g-1)*7]<-mean(ifelse(pred.glmcme>0.5,1,0)!=ytst)
+          sib_loss[1+(g-1)*7]<-mean(-2*(ytst*log(pred.glmcme)+(1-ytst)*log(1-pred.glmcme)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          sib_class[1+(g-1)*7]<-sqrt(sum((pred.glmcme-ytst)^2))/length(ytst)
+          sib_loss[1+(g-1)*7]<-mean(2*(yly - ytst + pred.glmcme - ytst*log(pred.glmcme)))
+        }
+        
+        
+        ## Run glmcmenet ---- ridge mg and w
+        cv.glmcme <- glmcmenet::cv.glmcmenet(xme, xcme, yglm, family=family,var.names=colnames(model.mtx),
+                                             nfolds = 10,type.measure="deviance",warm.str=warm.str,
+                                             screen_ind=F,group.penalty=mg,penalty.factor = w)
+        fit.glmcme <- cv.glmcme$cme.fit
+        sel.glmcme <- cv.glmcme$select.idx
+        grp.glmcme <- unique(unlist(lapply(sel.glmcme, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        sib_group[2+(g-1)*7]<-length(intersect(grp.glmcme,grp.ind))/length(grp.ind)
+        sib_TP[2+(g-1)*7]<-length(intersect(sel.glmcme,ind)) #selected effects in true model
+        sib_FP[2+(g-1)*7]<-length(setdiff(sel.glmcme,ind)) #selected effects not in true model
+        sib_FN[2+(g-1)*7]<-length(setdiff(ind,sel.glmcme)) #true effects not in selected model
+        pred.glmcme <- glmcmenet::predictcme(fit.glmcme,newx=tst.mtx,type="response")[,which(cv.glmcme$lambda.sib ==cv.glmcme$params[1]),
+                                                                                      which(cv.glmcme$lambda.cou == cv.glmcme$params[2])]
+        if(family=="binomial"){
+          sib_class[2+(g-1)*7]<-mean(ifelse(pred.glmcme>0.5,1,0)!=ytst)
+          sib_loss[2+(g-1)*7]<-mean(-2*(ytst*log(pred.glmcme)+(1-ytst)*log(1-pred.glmcme)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          sib_class[2+(g-1)*7]<-sqrt(sum((pred.glmcme-ytst)^2))/length(ytst)
+          sib_loss[2+(g-1)*7]<-mean(2*(yly - ytst + pred.glmcme - ytst*log(pred.glmcme)))
+        }
+        
+        
+        #lasso
+        cv.glmlas <- cv.glmnet(cbind(xme,xcme),yglm,family = family,type.measure="deviance",nfolds = 10)
+        fit.glmlas <- cv.glmlas$glmnet.fit 
+        sel.glmlas <- which(fit.glmlas$beta[,which(cv.glmlas$lambda==cv.glmlas$lambda.min)]!=0)
+        grp.glmlas <- unique(unlist(lapply(sel.glmlas, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        sib_group[3+(g-1)*7]<-length(intersect(grp.glmlas,grp.ind))/length(grp.ind)
+        sib_TP[3+(g-1)*7]<-length(intersect(sel.glmlas,ind)) #selected effects in true model
+        sib_FP[3+(g-1)*7]<-length(setdiff(sel.glmlas,ind)) #selected effects not in true model
+        sib_FN[3+(g-1)*7]<-length(setdiff(ind,sel.glmlas)) #true effects not in selected model
+        pred.glmlas <- predict(fit.glmlas,newx=tst.mtx,type="response")[,which(cv.glmlas$lambda==cv.glmlas$lambda.min)]
+        if(family=="binomial"){
+          sib_class[3+(g-1)*7]<-mean(ifelse(pred.glmlas>0.5,1,0)!=ytst)
+          sib_loss[3+(g-1)*7]<-mean(-2*(ytst*log(pred.glmlas)+(1-ytst)*log(1-pred.glmlas)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          sib_class[3+(g-1)*7]<-sqrt(sum((pred.glmlas-ytst)^2))/length(ytst)
+          sib_loss[3+(g-1)*7]<-mean(2*(yly - ytst + pred.glmlas - ytst*log(pred.glmlas)))
+        }
+        
+        #adp lasso
+        cv.cvaplas <- cv.glmnet(cbind(xme,xcme),yglm,family = family,type.measure="deviance",nfolds = 10, penalty.factor=w)
+        fit.cvaplas <- cv.cvaplas$glmnet.fit 
+        sel.cvaplas <- which(fit.cvaplas$beta[,which(cv.cvaplas$lambda==cv.cvaplas$lambda.min)]!=0)
+        grp.aplas <- unique(unlist(lapply(sel.cvaplas, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        sib_group[4+(g-1)*7]<-length(intersect(grp.aplas,grp.ind))/length(grp.ind)
+        sib_TP[4+(g-1)*7]<-length(intersect(sel.cvaplas,ind)) #selected effects in true model
+        sib_FP[4+(g-1)*7]<-length(setdiff(sel.cvaplas,ind)) #selected effects not in true model
+        sib_FN[4+(g-1)*7]<-length(setdiff(ind,sel.cvaplas)) #true effects not in selected model
+        pred.cvaplas <- predict(fit.cvaplas,newx=tst.mtx,type="response")[,which(cv.cvaplas$lambda==cv.cvaplas$lambda.min)]
+        if(family=="binomial"){
+          sib_class[4+(g-1)*7]<-mean(ifelse(pred.cvaplas>0.5,1,0)!=ytst)
+          sib_loss[4+(g-1)*7]<-mean(-2*(ytst*log(pred.cvaplas)+(1-ytst)*log(1-pred.cvaplas)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          sib_class[4+(g-1)*7]<-sqrt(sum((pred.cvaplas-ytst)^2))/length(ytst)
+          sib_loss[4+(g-1)*7]<-mean(2*(yly - ytst + pred.cvaplas - ytst*log(pred.cvaplas)))
+        }
+        
+        ## ncvreg
+        cv.ncv <- cv.ncvreg(cbind(xme, xcme), yglm, nfolds = 10, family = family) 
+        fit.ncv <- cv.ncv$fit  
+        sel.ncv <- which(fit.ncv$beta[,which(cv.ncv$lambda==cv.ncv$lambda.min)]!=0)
+        sel.ncv <- subset(sel.ncv,sel.ncv!=1)-1
+        grp.ncv <- unique(unlist(lapply(sel.ncv, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        sib_group[5+(g-1)*7]<-length(intersect(grp.ncv,grp.ind))/length(grp.ind)
+        sib_TP[5+(g-1)*7]<-length(intersect(sel.ncv,ind)) #selected effects in true model
+        sib_FP[5+(g-1)*7]<-length(setdiff(sel.ncv,ind)) #selected effects not in true model
+        sib_FN[5+(g-1)*7]<-length(setdiff(ind,sel.ncv)) #true effects not in selected model
+        pred.glmncv <- predict(fit.ncv,X=tst.mtx,type="response")[,which(cv.ncv$lambda==cv.ncv$lambda.min)]
+        if(family=="binomial"){
+          sib_class[5+(g-1)*7]<-mean(ifelse(pred.glmncv>0.5,1,0)!=ytst)
+          sib_loss[5+(g-1)*7]<-mean(-2*(ytst*log(pred.glmncv)+(1-ytst)*log(1-pred.glmncv)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          sib_class[5+(g-1)*7]<-sqrt(sum((pred.glmncv-ytst)^2))/length(ytst)
+          sib_loss[5+(g-1)*7]<-mean(2*(yly - ytst + pred.glmncv - ytst*log(pred.glmncv)))
+        }
+        
+        # grpreg
+        group <-  sub("\\|.*", "", colnames(cbind(xme,xcme)))
+        cv.grp <-  tryCatch({
+          # Attempt first option
+          cv.grpreg(cbind(xme, xcme), yglm, nfolds = 10, group=group, family = family,penalty="gel")
+        },error= function(e1) {
+          cv.grpreg(cbind(xme, xcme), yglm, nfolds = 10, group=group, family = family,penalty="cMCP")
+        },error=function(e2){
+          NULL
+        })
+        if(!is.null(cv.grp)){
+          fit.grp <- cv.grp$fit
+          sel.grp <- which(fit.grp$beta[,which(cv.grp$lambda==cv.grp$lambda.min)]!=0)
+          sel.grp <- subset(sel.grp,sel.grp!=1)-1
+          grp.grpgel <- unique(unlist(lapply(sel.grp, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+          sib_group[6+(g-1)*7]<-length(intersect(grp.grpgel,grp.ind))/length(grp.ind)
+          pred.glmgrp <- predict(fit.grp,X=tst.mtx,type="response")[,which(cv.grp$lambda==cv.grp$lambda.min)]
+          sib_TP[6+(g-1)*7]<-length(intersect(sel.grp,ind)) #selected effects in true model
+          sib_FP[6+(g-1)*7]<-length(setdiff(sel.grp,ind)) #selected effects not in true model
+          sib_FN[6+(g-1)*7]<-length(setdiff(ind,sel.grp)) #true effects not in selected model
+          if(family=="binomial"){
+            sib_class[6+(g-1)*7]<-mean(ifelse(pred.glmgrp>0.5,1,0)!=ytst)
+            sib_loss[6+(g-1)*7]<-mean(-2*(ytst*log(pred.glmgrp)+(1-ytst)*log(1-pred.glmgrp)))
+          }else if(family=="poisson"){
+            yly <- ytst*log(ytst)
+            yly[ytst==0] <- 0
+            sib_class[6+(g-1)*7]<-sqrt(sum((pred.glmgrp-ytst)^2))/length(ytst)
+            sib_loss[6+(g-1)*7]<-mean(2*(yly - ytst + pred.glmgrp - ytst*log(pred.glmgrp)))
+          }
+        }else{
+          fit.grp <-  NULL
+          sel.grp <- NULL
+          sib_loss[6+(g-1)*7]<-sib_TP[6+(g-1)*7]<-sib_FP[6+(g-1)*7]<-sib_FN[6+(g-1)*7]<- sib_group[6+(g-1)*7] <- sib_class[6+(g-1)*7] <-NA #main_group[6+(g-1)*7]<-
+        }
+        
+        ##hierNet
+        glmhnp <- hierNet.logistic.path(xme,as.numeric(yglm))
+        cv.glmhn <- hierNet.cv(glmhnp,xme,yglm,trace=0)
+        l.opt <- which(glmhnp$lamlist==cv.glmhn$lamhat)
+        me.sel <- (glmhnp$bp-glmhnp$bn)[,l.opt]
+        me.idx <- which(me.sel!=0) #selected main effects
+        int.sel <- glmhnp$th[,,l.opt]
+        int.idx <- which(int.sel!=0,arr.ind=T)
+        if(nrow(int.idx)!=0){
+          int.idx <- t(apply(int.idx,1,function(xx){sort(xx)}))
+          int.idx <- unique(int.idx) #selected interactions
+          int.nm <- sapply(1:nrow(int.idx),function(xx){
+            paste0(colnames(xme)[int.idx[xx,1]],colnames(xme)[int.idx[xx,2]])
+          })}else(int.nm=c())
+        Mtrue<-matrix(stringr::str_replace_all(unlist(strsplit(colnames(model.mtx)[ind],"|",fixed = TRUE)),"[^[:alnum:]]", ""),nrow=2)
+        me.true<-unique(Mtrue[1,])
+        int.true<-paste0(apply(Mtrue,2,sort)[1,],"",apply(Mtrue,2,sort)[2,])
+        sib_group[7+(g-1)*7]<-length(intersect(colnames(xme)[me.idx],me.true))/length(me.true)
+        sib_TP[7+(g-1)*7]<-length(intersect(colnames(xme)[me.idx],me.true))+length(intersect(int.nm,int.true)) #selected effects in true model
+        sib_FP[7+(g-1)*7]<-length(setdiff(colnames(xme)[me.idx],me.true))+length(setdiff(int.nm,int.true)) #selected effects not in true model
+        sib_FN[7+(g-1)*7]<-length(setdiff(me.true,colnames(xme)[me.idx]))+length(setdiff(int.true,int.nm)) #true effects not in selected model
+        pred.glmhn <- predict(glmhnp,newx=tst.mtx[,1:p])$prob[,l.opt]
+        if(family=="binomial"){
+          sib_class[7+(g-1)*7]<-mean(ifelse(pred.glmhn>0.5,1,0)!=ytst)
+          sib_loss[7+(g-1)*7]<-mean(-2*(ytst*log(pred.glmhn)+(1-ytst)*log(1-pred.glmhn)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          sib_class[7+(g-1)*7]<-sqrt(sum((pred.glmhn-ytst)^2))/length(ytst)
+          sib_loss[7+(g-1)*7]<-mean(2*(yly - ytst + pred.glmhn - ytst*log(pred.glmhn)))
+        }
+      }
+      
+      ########### Main+Cousin active ###############
+      
+      for(g in 1:length(num.grp)){
+        
+        print(paste0("G",num.grp[g],"cousin,iter=",k))
+        
+        cmeind <- c()
+        meind <- 1:num.grp[g]
+        for (ii in 1:num.grp[g]){
+          eff <- sample(seq(2*(p-1)),num.act) # sample two active cousins from one group
+          for (jj in 1:length(eff)){
+            if(ii>ceiling(eff[jj]/2)){
+              cmeind <- c(cmeind, p + (ceiling(eff[jj]/2)-1)*(2*(p-1)) + ifelse(eff[jj]%%2==0,2,1) + (ii-2)*2)
+            }else{
+              cmeind <- c(cmeind, p + ceiling(eff[jj]/2)*(2*(p-1)) + ifelse(eff[jj]%%2==0,2,1) + (ii-1)*2)
+            }# index on active cousins from first 4 groups
+          }
+        }
+        ind<- sort(unique(c(meind, cmeind)))
+        grp.ind <- unique(unlist(lapply(ind, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        des.mtx <- model.mtx[,ind]
+        
+        inter = 0
+        if(family=="binomial"){
+          betatrue<-c(rep(5,num.grp[g]),rep(1,2*num.grp[g]))
+          xbtrue <- inter+des.mtx %*% betatrue
+          yglm <- rbinom(length(xbtrue),1,1/(1+exp(-xbtrue)))
+        }else if(family=="poisson"){
+          betatrue<-c(rep(2/num.grp[g],num.grp[g]),rep(0.4/num.grp[g],2*num.grp[g]))
+          xbtrue <- inter+des.mtx %*% betatrue
+          yglm <- rpois(length(xbtrue),exp(xbtrue))
+        }
+        
+        xme <- model.mtx[,1:p]
+        xcme <- model.mtx[,(p+1):ncol(model.mtx)]
+        
+        ## test x and yglm
+        xbtst <- inter+tst.mtx[,ind] %*% betatrue
+        
+        if(family=="binomial"){
+          ytst <- rbinom(length(xbtst),1,1/(1+exp(-xbtst)))
+          cou_underlying[g]<-mean(ifelse((1/(1+exp(-xbtst)))>0.5,1,0)!=ytst)
+        }else if(family=="poisson"){
+          ytst <- rpois(length(xbtst),exp(xbtst))
+          cou_underlying[g]<-sqrt(sum((exp(xbtst)-ytst)^2))/length(ytst)
+        }
+        
+        
+        cv.ridge <- cv.glmnet(cbind(xme,xcme),yglm, family=family, alpha=0, standardize=FALSE)
+        coef <- matrix(coef(cv.ridge, s=cv.ridge$lambda.min)[, 1][2:(ncol(cbind(xme,xcme))+1)]) ## Using gamma = 1
+        mg <- sapply(grouplist,function(x){1/(sum(abs(coef[x]))+1/n)^1})
+        mg[mg == Inf] <- 999999999 ## Replacing values estimated as Infinite for 999999999
+        w <- 1/(abs(coef)+1/n)^1 ## Using gamma = 1
+        w[w[,1] == Inf] <- 999999999 ## Replacing values estimated as Infinite for 999999999
+        
+        
+        
+        ## Run glmcmenet ---- no adaptive
+        cv.glmcme <- glmcmenet::cv.glmcmenet(xme, xcme, yglm, family=family,var.names=colnames(model.mtx),
+                                             nfolds = 10,type.measure="deviance",warm.str=warm.str,
+                                             screen_ind=F)
+        fit.glmcme <- cv.glmcme$cme.fit
+        sel.glmcme <- cv.glmcme$select.idx
+        grp.glmcme <- unique(unlist(lapply(sel.glmcme, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        cou_group[1+(g-1)*7]<-length(intersect(grp.glmcme,grp.ind))/length(grp.ind)
+        cou_TP[1+(g-1)*7]<-length(intersect(sel.glmcme,ind)) #selected effects in true model
+        cou_FP[1+(g-1)*7]<-length(setdiff(sel.glmcme,ind)) #selected effects not in true model
+        cou_FN[1+(g-1)*7]<-length(setdiff(ind,sel.glmcme)) #true effects not in selected model
+        pred.glmcme <- glmcmenet::predictcme(fit.glmcme,newx=tst.mtx,type="response")[,which(cv.glmcme$lambda.sib ==cv.glmcme$params[1]),
+                                                                                      which(cv.glmcme$lambda.cou == cv.glmcme$params[2])]
+        if(family=="binomial"){
+          cou_class[1+(g-1)*7]<-mean(ifelse(pred.glmcme>0.5,1,0)!=ytst)
+          cou_loss[1+(g-1)*7]<-mean(-2*(ytst*log(pred.glmcme)+(1-ytst)*log(1-pred.glmcme)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          cou_class[1+(g-1)*7]<-sqrt(sum((pred.glmcme-ytst)^2))/length(ytst)
+          cou_loss[1+(g-1)*7]<-mean(2*(yly - ytst + pred.glmcme - ytst*log(pred.glmcme)))
+        }
+        
+        
+        ## Run glmcmenet ---- ridge mg and w
+        cv.glmcme <- glmcmenet::cv.glmcmenet(xme, xcme, yglm, family=family,var.names=colnames(model.mtx),
+                                             nfolds = 10,type.measure="deviance",warm.str=warm.str,
+                                             screen_ind=F,group.penalty=mg,penalty.factor = w)
+        fit.glmcme <- cv.glmcme$cme.fit
+        sel.glmcme <- cv.glmcme$select.idx
+        grp.glmcme <- unique(unlist(lapply(sel.glmcme, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        cou_group[2+(g-1)*7]<-length(intersect(grp.glmcme,grp.ind))/length(grp.ind)
+        cou_TP[2+(g-1)*7]<-length(intersect(sel.glmcme,ind)) #selected effects in true model
+        cou_FP[2+(g-1)*7]<-length(setdiff(sel.glmcme,ind)) #selected effects not in true model
+        cou_FN[2+(g-1)*7]<-length(setdiff(ind,sel.glmcme)) #true effects not in selected model
+        pred.glmcme <- glmcmenet::predictcme(fit.glmcme,newx=tst.mtx,type="response")[,which(cv.glmcme$lambda.sib ==cv.glmcme$params[1]),
+                                                                                      which(cv.glmcme$lambda.cou == cv.glmcme$params[2])]
+        if(family=="binomial"){
+          cou_class[2+(g-1)*7]<-mean(ifelse(pred.glmcme>0.5,1,0)!=ytst)
+          cou_loss[2+(g-1)*7]<-mean(-2*(ytst*log(pred.glmcme)+(1-ytst)*log(1-pred.glmcme)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          cou_class[2+(g-1)*7]<-sqrt(sum((pred.glmcme-ytst)^2))/length(ytst)
+          cou_loss[2+(g-1)*7]<-mean(2*(yly - ytst + pred.glmcme - ytst*log(pred.glmcme)))
+        }
+        
+        #lasso
+        cv.glmlas <- cv.glmnet(cbind(xme,xcme),yglm,family = family,type.measure="deviance",nfolds = 10)
+        fit.glmlas <- cv.glmlas$glmnet.fit 
+        sel.glmlas <- which(fit.glmlas$beta[,which(cv.glmlas$lambda==cv.glmlas$lambda.min)]!=0)
+        grp.glmlas <- unique(unlist(lapply(sel.glmlas, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        cou_group[3+(g-1)*7]<-length(intersect(grp.glmlas,grp.ind))/length(grp.ind)
+        cou_TP[3+(g-1)*7]<-length(intersect(sel.glmlas,ind)) #selected effects in true model
+        cou_FP[3+(g-1)*7]<-length(setdiff(sel.glmlas,ind)) #selected effects not in true model
+        cou_FN[3+(g-1)*7]<-length(setdiff(ind,sel.glmlas)) #true effects not in selected model
+        pred.glmlas <- predict(fit.glmlas,newx=tst.mtx,type="response")[,which(cv.glmlas$lambda==cv.glmlas$lambda.min)]
+        if(family=="binomial"){
+          cou_class[3+(g-1)*7]<-mean(ifelse(pred.glmlas>0.5,1,0)!=ytst)
+          cou_loss[3+(g-1)*7]<-mean(-2*(ytst*log(pred.glmlas)+(1-ytst)*log(1-pred.glmlas)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          cou_class[3+(g-1)*7]<-sqrt(sum((pred.glmlas-ytst)^2))/length(ytst)
+          cou_loss[3+(g-1)*7]<-mean(2*(yly - ytst + pred.glmlas - ytst*log(pred.glmlas)))
+        }
+        
+        #adp lasso
+        cv.cvaplas <- cv.glmnet(cbind(xme,xcme),yglm,family = family,type.measure="deviance",nfolds = 10, penalty.factor=w)
+        fit.cvaplas <- cv.cvaplas$glmnet.fit
+        sel.cvaplas <- which(fit.cvaplas$beta[,which(cv.cvaplas$lambda==cv.cvaplas$lambda.min)]!=0)
+        grp.aplas <- unique(unlist(lapply(sel.cvaplas, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        cou_group[4+(g-1)*7]<-length(intersect(grp.aplas,grp.ind))/length(grp.ind)
+        cou_TP[4+(g-1)*7]<-length(intersect(sel.cvaplas,ind)) #selected effects in true model
+        cou_FP[4+(g-1)*7]<-length(setdiff(sel.cvaplas,ind)) #selected effects not in true model
+        cou_FN[4+(g-1)*7]<-length(setdiff(ind,sel.cvaplas)) #true effects not in selected model
+        pred.cvaplas <- predict(fit.cvaplas,newx=tst.mtx,type="response")[,which(cv.cvaplas$lambda==cv.cvaplas$lambda.min)]
+        if(family=="binomial"){
+          cou_class[4+(g-1)*7]<-mean(ifelse(pred.cvaplas>0.5,1,0)!=ytst)
+          cou_loss[4+(g-1)*7]<-mean(-2*(ytst*log(pred.cvaplas)+(1-ytst)*log(1-pred.cvaplas)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          cou_class[4+(g-1)*7]<-sqrt(sum((pred.cvaplas-ytst)^2))/length(ytst)
+          cou_loss[4+(g-1)*7]<-mean(2*(yly - ytst + pred.cvaplas - ytst*log(pred.cvaplas)))
+        }
+        
+        ## ncvreg
+        cv.ncv <- cv.ncvreg(cbind(xme, xcme), yglm, nfolds = 10, family = family) 
+        fit.ncv <- cv.ncv$fit 
+        sel.ncv <- which(fit.ncv$beta[,which(cv.ncv$lambda==cv.ncv$lambda.min)]!=0)
+        sel.ncv <- subset(sel.ncv,sel.ncv!=1)-1
+        grp.ncv <- unique(unlist(lapply(sel.ncv, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+        cou_group[5+(g-1)*7]<-length(intersect(grp.ncv,grp.ind))/length(grp.ind)
+        cou_TP[5+(g-1)*7]<-length(intersect(sel.ncv,ind)) #selected effects in true model
+        cou_FP[5+(g-1)*7]<-length(setdiff(sel.ncv,ind)) #selected effects not in true model
+        cou_FN[5+(g-1)*7]<-length(setdiff(ind,sel.ncv)) #true effects not in selected model
+        pred.glmncv <- predict(fit.ncv,X=tst.mtx,type="response")[,which(cv.ncv$lambda==cv.ncv$lambda.min)]
+        if(family=="binomial"){
+          cou_class[5+(g-1)*7]<-mean(ifelse(pred.glmncv>0.5,1,0)!=ytst)
+          cou_loss[5+(g-1)*7]<-mean(-2*(ytst*log(pred.glmncv)+(1-ytst)*log(1-pred.glmncv)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          cou_class[5+(g-1)*7]<-sqrt(sum((pred.glmncv-ytst)^2))/length(ytst)
+          cou_loss[5+(g-1)*7]<-mean(2*(yly - ytst + pred.glmncv - ytst*log(pred.glmncv)))
+        }
+        
+        # grpreg
+        group <-  sub("\\|.*", "", colnames(cbind(xme,xcme)))
+        cv.grp <-  tryCatch({
+          # Attempt first option
+          cv.grpreg(cbind(xme, xcme), yglm, nfolds = 10, group=group, family = family,penalty="gel")
+        },error= function(e1) {
+          cv.grpreg(cbind(xme, xcme), yglm, nfolds = 10, group=group, family = family,penalty="cMCP")
+        },error=function(e2){
+          NULL
+        })
+        if(!is.null(cv.grp)){
+          fit.grp <- cv.grp$fit
+          sel.grp <- which(fit.grp$beta[,which(cv.grp$lambda==cv.grp$lambda.min)]!=0)
+          sel.grp <- subset(sel.grp,sel.grp!=1)-1
+          grp.grpgel <- unique(unlist(lapply(sel.grp, function(id) names(grouplist)[sapply(grouplist, function(g) id %in% g)])))
+          cou_group[6+(g-1)*7]<-length(intersect(grp.grpgel,grp.ind))/length(grp.ind)
+          pred.glmgrp <- predict(fit.grp,X=tst.mtx,type="response")[,which(cv.grp$lambda==cv.grp$lambda.min)]
+          cou_TP[6+(g-1)*7]<-length(intersect(sel.grp,ind)) #selected effects in true model
+          cou_FP[6+(g-1)*7]<-length(setdiff(sel.grp,ind)) #selected effects not in true model
+          cou_FN[6+(g-1)*7]<-length(setdiff(ind,sel.grp)) #true effects not in selected model
+          if(family=="binomial"){
+            cou_class[6+(g-1)*7]<-mean(ifelse(pred.glmgrp>0.5,1,0)!=ytst)
+            cou_loss[6+(g-1)*7]<-mean(-2*(ytst*log(pred.glmgrp)+(1-ytst)*log(1-pred.glmgrp)))
+          }else if(family=="poisson"){
+            yly <- ytst*log(ytst)
+            yly[ytst==0] <- 0
+            cou_class[6+(g-1)*7]<-sqrt(sum((pred.glmgrp-ytst)^2))/length(ytst)
+            cou_loss[6+(g-1)*7]<-mean(2*(yly - ytst + pred.glmgrp - ytst*log(pred.glmgrp)))
+          }
+        }else{
+          fit.grp <-  NULL
+          sel.grp <- NULL
+          cou_loss[6+(g-1)*7]<-cou_TP[6+(g-1)*7]<-cou_FP[6+(g-1)*7]<-cou_FN[6+(g-1)*7]<- cou_group[6+(g-1)*7] <- cou_class[6+(g-1)*7] <-NA #main_group[6+(g-1)*7]<-
+        }
+        
+        ##hierNet
+        glmhnp <- hierNet.logistic.path(xme,as.numeric(yglm))
+        cv.glmhn <- hierNet.cv(glmhnp,xme,yglm,trace=0)
+        l.opt <- which(glmhnp$lamlist==cv.glmhn$lamhat)
+        me.sel <- (glmhnp$bp-glmhnp$bn)[,l.opt]
+        me.idx <- which(me.sel!=0) #selected main effects
+        int.sel <- glmhnp$th[,,l.opt]
+        int.idx <- which(int.sel!=0,arr.ind=T)
+        if(nrow(int.idx)!=0){
+          int.idx <- t(apply(int.idx,1,function(xx){sort(xx)}))
+          int.idx <- unique(int.idx) #selected interactions
+          int.nm <- sapply(1:nrow(int.idx),function(xx){
+            paste0(colnames(xme)[int.idx[xx,1]],colnames(xme)[int.idx[xx,2]])
+          })}else(int.nm=c())
+        Mtrue<-matrix(stringr::str_replace_all(unlist(strsplit(colnames(model.mtx)[ind],"|",fixed = TRUE)),"[^[:alnum:]]", ""),nrow=2)
+        me.true<-unique(Mtrue[1,])
+        int.true<-paste0(apply(Mtrue,2,sort)[1,],"",apply(Mtrue,2,sort)[2,])
+        cou_group[7+(g-1)*7]<-length(intersect(colnames(xme)[me.idx],me.true))/length(me.true)
+        cou_TP[7+(g-1)*7]<-length(intersect(colnames(xme)[me.idx],me.true))+length(intersect(int.nm,int.true)) #selected effects in true model
+        cou_FP[7+(g-1)*7]<-length(setdiff(colnames(xme)[me.idx],me.true))+length(setdiff(int.nm,int.true)) #selected effects not in true model
+        cou_FN[7+(g-1)*7]<-length(setdiff(me.true,colnames(xme)[me.idx]))+length(setdiff(int.true,int.nm)) #true effects not in selected model
+        pred.glmhn <- predict(glmhnp,newx=tst.mtx[,1:p])$prob[,l.opt]
+        if(family=="binomial"){
+          cou_class[7+(g-1)*7]<-mean(ifelse(pred.glmhn>0.5,1,0)!=ytst)
+          cou_loss[7+(g-1)*7]<-mean(-2*(ytst*log(pred.glmhn)+(1-ytst)*log(1-pred.glmhn)))
+        }else if(family=="poisson"){
+          yly <- ytst*log(ytst)
+          yly[ytst==0] <- 0
+          cou_class[7+(g-1)*7]<-sqrt(sum((pred.glmhn-ytst)^2))/length(ytst)
+          cou_loss[7+(g-1)*7]<-mean(2*(yly - ytst + pred.glmhn - ytst*log(pred.glmhn)))
+        }
+      }
+      
+      return(list(
+        underlying=cbind(t(cbind(cou_underlying,sib_underlying,main_underlying)),effect=c("cousins","siblings")),
+        TP=cbind(t(cbind(cou_TP,sib_TP)),effect=c("cousins","siblings")),
+        FP=cbind(t(cbind(cou_FP,sib_FP)),effect=c("cousins","siblings")),
+        FN=cbind(t(cbind(cou_FN,sib_FN)),effect=c("cousins","siblings")),
+        group_TPR=cbind(t(cbind(cou_group,sib_group)),effect=c("cousins","siblings")),
+        misclassific=cbind(t(cbind(cou_class,sib_class,main_class)),effect=c("cousins","siblings")),
+        deviance=cbind(t(cbind(cou_loss,sib_loss,main_loss)),effect=c("cousins","siblings"))
+      ))
+    }, error = function(e) {
+      # code that will be executed in the event of an error
+      sib_underlying<-rep(NA,length(num.grp))
+      cou_underlying<-rep(NA,length(num.grp))
+
+      sib_TP<-rep(NA,length(num.grp)*7)
+      cou_TP<-rep(NA,length(num.grp)*7)
+ 
+      sib_FP<-rep(NA,length(num.grp)*7)
+      cou_FP<-rep(NA,length(num.grp)*7)
+
+      sib_FN<-rep(NA,length(num.grp)*7)
+      cou_FN<-rep(NA,length(num.grp)*7)
+
+      sib_group<-rep(NA,length(num.grp)*7)
+      cou_group<-rep(NA,length(num.grp)*7)
+
+      sib_class<-rep(NA,length(num.grp)*7)
+      cou_class<-rep(NA,length(num.grp)*7)
+
+      sib_loss<-rep(NA,length(num.grp)*7)
+      cou_loss<-rep(NA,length(num.grp)*7)
+
+      base_names <- c("glmcme(baseline)","glmcme(ridge)","Lasso", "adpLasso", "MCP", "GEL", "hiernet")
+      
+      names(sib_TP)=names(cou_TP)=
+        names(sib_FP)=names(cou_FP)=
+        names(sib_FN)=names(cou_FN)=
+        names(sib_class)=names(cou_class)=
+        names(sib_group)=names(cou_group)=
+        names(sib_loss)=names(cou_loss)=unlist(lapply(num.grp, function(g) paste0(base_names, "_G", g, "A",num.act)))
+      names(sib_underlying)=names(cou_underlying)=unlist(lapply(num.grp, function(g) paste0("G", g, "A",num.act)))
+      
+      
+      return(list(
+        underlying=cbind(t(cbind(cou_underlying,sib_underlying,main_underlying)),effect=c("cousins","siblings")),
+        TP=cbind(t(cbind(cou_TP,sib_TP)),effect=c("cousins","siblings")),
+        FP=cbind(t(cbind(cou_FP,sib_FP)),effect=c("cousins","siblings")),
+        FN=cbind(t(cbind(cou_FN,sib_FN)),effect=c("cousins","siblings")),
+        group_TPR=cbind(t(cbind(cou_group,sib_group)),effect=c("cousins","siblings")),
+        misclassific=cbind(t(cbind(cou_class,sib_class)),effect=c("cousins","siblings")),
+        deviance=cbind(t(cbind(cou_loss,sib_loss)),effect=c("cousins","siblings"))
+      ))
+    })
+  }
+  
+  
+  clusterExport(cl, varlist = c("n", "p", "num.act", "num.grp", "family", "warm.str", "beta", "rho","ones","covmtx"), envir = environment())
+  
+  results <- parLapply(cl, 1:iter, single_iter)
+  stopCluster(cl)
+  
+  underlying <- do.call(rbind, lapply(results, `[[`, "underlying"))
+  TP <- do.call(rbind, lapply(results, `[[`, "TP"))
+  FP <- do.call(rbind, lapply(results, `[[`, "FP"))
+  FN <- do.call(rbind, lapply(results, `[[`, "FN"))
+  group_TPR <- do.call(rbind, lapply(results, `[[`, "group_TPR"))
+  misclassific <- do.call(rbind, lapply(results, `[[`, "misclassific"))
+  deviance <- do.call(rbind, lapply(results, `[[`, "deviance"))
+  
+  return(list(TP=TP,FP=FP,FN=FN,group_TPR=group_TPR,misclassific=misclassific,deviance=deviance,underlying=underlying)) #misgroup=misgroup, misclassific=misclassific,
+}
+
+n=50
+p=20
+rho=1/sqrt(2)
+family= "binomial" #"poisson"  #"binomial"
+
+warm.str="elastic"
+
+result<-simulation_adaptive_lambda(n=n,p=p,family=family,warm.str=warm.str, iter = 100,rho=rho)
+
+saveRDS(result,file=paste0("../lambda_adaptive_",family,"_",warm.str,"_n",n,"p",p,"rho",rho,".rds"))
+
+
+

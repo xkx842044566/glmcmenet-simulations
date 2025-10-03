@@ -1,0 +1,105 @@
+if(!require(dplyr)) install.packages("dplyr",repos = "http://cran.r-project.org")
+library(dplyr)
+if(!require(tidyr)) install.packages("tidyr",repos = "http://cran.r-project.org")
+library(tidyr)
+if(!require(ggplot2)) install.packages("ggplot2",repos = "http://cran.r-project.org")
+library(ggplot2)
+if(!require(MASS)) install.packages("MASS",repos = "http://cran.r-project.org")
+library(MASS)
+if(!require(gridExtra)) install.packages("gridExtra",repos = "http://cran.r-project.org")
+library(gridExtra)
+if(!require(stringr)) install.packages("stringr",repos = "http://cran.r-project.org")
+library(stringr)
+
+
+n=50
+p=50
+rho=0
+family= "gaussian" #"poisson"  #"binomial" "gaussian"
+
+warm.str="NULL" #elastic NULL
+
+filename = paste0("/Users/kexinxie/Downloads/Conditional main effect/Conditional_main_effect/simulation/250114_adplasso_lambda_grp_delta_ind_nome/nome_lambda_adaptive_",family,"_",warm.str,"_n",n,"p",p,"rho",rho,".rds")
+plotdat<-readRDS(filename)
+
+df_TP <- apply(plotdat$TP[,1:(ncol(plotdat$TP)-1)],2, as.numeric) 
+df_FP <- apply(plotdat$FP[,1:(ncol(plotdat$TP)-1)],2, as.numeric)
+df_FN <- apply(plotdat$FN[,1:(ncol(plotdat$TP)-1)],2, as.numeric)
+
+plotdat$Precision <- plotdat$FP
+plotdat$Precision[,1:(ncol(plotdat$TP)-1)] <- df_TP/(df_TP+df_FP) 
+
+plotdat$TPR <- plotdat$FP 
+plotdat$TPR[,1:(ncol(plotdat$TP)-1)] <- df_TP/(df_TP+df_FN) #(true positive rate/sensitivity)
+
+plotdat$F1 <- plotdat$FP
+plotdat$F1[,1:(ncol(plotdat$TP)-1)] <- 2*df_TP/(2*df_TP+df_FN+df_FP) 
+
+#### draw boxplot
+p_TPR<-as.data.frame(plotdat$TPR) %>% gather(key=type,value=num,-effect)  %>% separate(type,c("method","GxAy"),sep="_") %>%
+  filter(GxAy %in% c("G4A2","G6A2","G8A2")) %>%
+  filter(method %in% c("cme","glmcme(m1w1)","Lasso","adpLasso","MCP","GEL")) %>%
+  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+  facet_wrap(~effect)+
+  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="TP") +
+  theme_bw()
+
+p_Precision<-as.data.frame(plotdat$Precision) %>% gather(key=type,value=num,-effect)  %>% separate(type,c("method","GxAy"),sep="_") %>%
+  filter(GxAy %in% c("G4A2","G6A2","G8A2")) %>%
+  filter(method %in% c("cme","glmcme(m1w1)","Lasso","adpLasso","MCP","GEL")) %>%
+  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+  facet_wrap(~effect)+
+  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="Precision") +
+  theme_bw()
+
+#p_FN<-as.data.frame(plotdat$FN) %>% gather(key=type,value=num,-effect)  %>% separate(type,c("method","GxAy"),sep="_") %>%
+#  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+#  facet_wrap(~effect)+
+#  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="# of false negative (dont discovery)") +
+#  theme_bw()
+
+#p_misspecification<-as.data.frame(plotdat$misspecification) %>% gather(key=type,value=num,-effect) %>% separate(type,c("method","GxAy"),sep="_") %>%
+#  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+#  facet_wrap(~effect)+
+#  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="# of misspecification") +
+#  theme_bw()
+
+#p_recall<-as.data.frame(plotdat$recall) %>% gather(key=type,value=num,-effect)  %>% separate(type,c("method","GxAy"),sep="_") %>%
+#  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+#  facet_wrap(~effect)+
+#  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="recall") +
+#  theme_bw()
+
+p_F1<-as.data.frame(plotdat$F1) %>% gather(key=type,value=num,-effect)  %>% separate(type,c("method","GxAy"),sep="_") %>%
+  filter(GxAy %in% c("G4A2","G6A2","G8A2")) %>%
+  filter(method %in% c("cme","glmcme(m1w1)","Lasso","adpLasso","MCP","GEL")) %>%
+  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+  facet_wrap(~effect)+
+  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="F1 score") +
+  theme_bw()
+
+#p_misclassific<-rbind(as.data.frame(plotdat$misclassific) %>% gather(key=type,value=num,-effect)%>% separate(type,c("method","GxAy"),sep="_"),
+#                      as.data.frame(plotdat$underlying) %>% mutate(method="underlying") %>% gather(key=GxAy,value=num, -effect,-method))%>%
+#  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+#  facet_wrap(~effect,scales="free_y")+
+#  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="misclassification rate") +
+#  theme_bw()
+
+p_deviance<-as.data.frame(plotdat$deviance) %>% gather(key=type,value=num,-effect) %>% separate(type,c("method","GxAy"),sep="_") %>%
+  filter(GxAy %in% c("G4A2","G6A2","G8A2")) %>%
+  filter(method %in% c("cme","glmcme(m1w1)","Lasso","adpLasso","MCP","GEL")) %>%
+  ggplot(aes(x=GxAy,y=as.numeric(num),colour=method,fill=method))+
+  facet_wrap(~effect,scales="free_y")+
+  geom_boxplot() + labs(title=paste0("(n,p)=(",n,",",p,")"),y="Deviance") +
+  theme_bw()
+
+plot <- ggpubr::ggarrange(p_TPR,p_Precision,p_F1,p_deviance,nrow=2,ncol=2, common.legend = TRUE,legend="right")
+plot
+#ggsave(filename=paste0("/Users/kexinxie/Downloads/Conditional main effect/Conditional_main_effect/simulation/0322_constant_screen_compare/select_nonscreen_",family,"n",n,"p",p,".png"), plot = plot,width = 40, height = 22, units = "cm")
+
+
+
+pdf(file=paste0("/Users/kexinxie/Downloads/Conditional main effect/Conditional_main_effect/simulation/0416_overlapgroup_adaptive_dev/weight_",family,"n",n,"p",p,".pdf"),width = 15, height = 15)
+print(plot)
+dev.off()
+

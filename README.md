@@ -1,4 +1,4 @@
-# glmcmenet-paper-repro
+# glmcmenet-simulation-repro
 
 Reproduction code for the paper  
 **“Adaptive Bi-Level Variable Selection of Conditional Main Effects for Generalized Linear Models”**  

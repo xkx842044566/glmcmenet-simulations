@@ -1,8 +1,10 @@
-#' Simulation for adaptive lambda (reproducible/portable)
-#' - deterministic RNG across workers
-#' - portable core count
-#' - fixes undefined objects and guards family-specific code
-#' - returns tidy results
+# 01_example2_simulation.R
+# Defines the simulation functions for Example 2 (Gaussian and GLM cases).
+# This file is sourced by `02_run_simulation.R`; users do not usually call
+# these functions directly.
+# To reproduce the paper’s results, you only need to run `02_run_simulation.R`,
+# which will automatically source this file.
+
 suppressPackageStartupMessages({
   library(MASS)
   library(glmcmenet)
@@ -16,6 +18,25 @@ suppressPackageStartupMessages({
   library(foreach)
   library(doParallel)
 })
+
+.get_cores <- function(cores = NULL, max_cap = 16L) {
+  if (!is.null(cores)) {
+    return(max(1L, as.integer(cores)))
+  }
+  
+  slurm_cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = NA)))
+  if (!is.na(slurm_cores) && slurm_cores > 0L) {
+    return(max(1L, slurm_cores))
+  }
+  
+  dc <- parallel::detectCores(logical = TRUE)
+  if (is.na(dc)) dc <- 1L
+  
+  cores <- max(1L, dc - 1L)
+  cores <- min(cores, max_cap)
+  cores
+}
+
 
 # Utility: safe family guard for hierNet (binomial only)
 .fit_hiernet_binomial <- function(xme, y, tst, family) {
@@ -64,7 +85,9 @@ simulation_glmcmenet_gaussian <- function(
   covmtx <- rho * ones + (1 - rho) * diag(p)
   
   ## Cluster (portable)
-  if (is.null(cores)) cores <- max(1L, parallel::detectCores(logical = TRUE) - 1L)
+  #if (is.null(cores)) cores <- max(1L, parallel::detectCores(logical = TRUE) - 1L)
+  cores <- .get_cores(cores, max_cap = 32L)
+  closeAllConnections()  # <<< add this line
   cl <- parallel::makeCluster(cores)
   on.exit(try(parallel::stopCluster(cl), silent = TRUE), add = TRUE)
   doParallel::registerDoParallel(cl)
@@ -158,7 +181,7 @@ simulation_glmcmenet_gaussian <- function(
       }
       sort(unique(c(meind, cmeind)))
     }
-
+    
     ## Scenario loop
     for (mode in c("siblings", "cousins")) {
       for (g in seq_along(num.grp)) {
@@ -247,7 +270,7 @@ simulation_glmcmenet_gaussian <- function(
         grp4 <- safe_groups(sel4)
         pred4 <- as.numeric(predict(cv.al$glmnet.fit, newx = tst_ref, type = "response")[, k, drop = TRUE])
         m4 <- fill_metrics(list(ind = ind), sel4, grp4, grp_true, pred4, yt)
-
+        
         
         ## (6) ncvreg (MCP)
         cv.ncv <- ncvreg::cv.ncvreg(cbind(xme, xcme), y, nfolds = 10, family = "gaussian")
@@ -373,7 +396,9 @@ simulation_glmcmenet_glm <- function(
   covmtx <- rho * ones + (1 - rho) * diag(p)
   
   # Cluster (portable)
-  if (is.null(cores)) cores <- max(1L, parallel::detectCores(logical = TRUE) - 1L)
+  #if (is.null(cores)) cores <- max(1L, parallel::detectCores(logical = TRUE) - 1L)
+  cores <- .get_cores(cores, max_cap = 32L)
+  closeAllConnections()  # <<< add this line
   cl <- makeCluster(cores)
   on.exit(try(stopCluster(cl), silent = TRUE), add = TRUE)
   registerDoParallel(cl)

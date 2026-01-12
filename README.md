@@ -31,6 +31,9 @@ The workflow is:
 - Internet access the first time you install packages
 - On multi-core machines, the scripts use `parallel`, `foreach`, and `doParallel`,
   but they will also run on a single core.
+- Platform note (for packages compiled from source):
+  - Windows users may need **Rtools**
+  - macOS users may need **Xcode Command Line Tools** (`xcode-select --install`)
 
 All package versions used in the paper are recorded in `renv.lock`.
 
@@ -48,7 +51,29 @@ renv::restore()            # installs the versions recorded in renv.lock
 This step may take several minutes the first time. You **do not** need to run
 `00_renv_setup.R`; that file was only used to create `renv.lock`.
 
+### Installing glmcmenet (GitHub dependency)
+
+The simulations depend on the `glmcmenet` package, which is installed from GitHub and recorded in renv.lock.
+
+In most cases, glmcmenet will be installed automatically when you run:
+
+renv::restore()
+
+If glmcmenet is not installed correctly (e.g., due to network or compilation issues), you can install it manually before or after running renv::restore():
+
+```r
+install.packages("remotes")
+remotes::install_github("xkx842044566/glmcmenet")
+```
+
+To verify installation:
+
+```r
+library(glmcmenet)
+```
+
 ---
+
 
 ## 2. Run the simulations
 
